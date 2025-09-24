@@ -1,8 +1,11 @@
 ﻿using Microsoft.Extensions.Configuration;
+using System;
 using System.Net;
 using System.Numerics;
+using System.Reflection.Metadata;
 using System.Text;
 using System.Xml;
+using System.Xml.Linq;
 
 namespace ModulePelcoD.Hikvision
 {
@@ -15,7 +18,7 @@ namespace ModulePelcoD.Hikvision
         public string CameraChannel { get; set; }
         public string UserName { get; set; }
         public string Password { get; set; }
-        public int TimeoutMs { get; set; }
+        public int TimeoutMs { get; set; } = 500;
 
         public readonly string InfoUri = "/ISAPI/System/deviceInfo"; //http://172.168.10.101/ISAPI/System/deviceInfo
         public readonly string PTZCtrlUri = "/ISAPI/PTZCtrl/channels";
@@ -132,7 +135,7 @@ namespace ModulePelcoD.Hikvision
                 using var handler = new HttpClientHandler();
                 handler.Credentials = GetCredentialCache(new Uri(GetUri(InfoUri)));
                 using var client = new HttpClient(handler);
-                client.Timeout = TimeSpan.FromMilliseconds(500);
+                client.Timeout = TimeSpan.FromMilliseconds(TimeoutMs);
 
                 HttpResponseMessage response = await client.GetAsync(GetUri(InfoUri));
                 Console.WriteLine($"Status Code: {response.StatusCode}");
@@ -185,6 +188,259 @@ namespace ModulePelcoD.Hikvision
         }
 
         /// <summary>
+        /// PUT /ISAPI/PTZCtrl/channels/1/presets/1
+        /// </summary>
+        /// <param name="presetIndex"></param>
+        /// <returns></returns>
+        /// <exception cref="NullReferenceException"></exception>
+        public async Task<HttpResponseMessage> SetPreset(int presetIndex)
+        {
+            if (string.IsNullOrEmpty(CameraIP)) throw new NullReferenceException(CameraIP);
+            if (string.IsNullOrEmpty(UserName)) throw new NullReferenceException(UserName);
+
+            var content = GetPresetsXmlContentString(presetIndex);
+            try
+            {
+                using var handler = new HttpClientHandler();
+                handler.Credentials = GetCredentialCache(new Uri(SetPresetUri(presetIndex)));
+                using var client = new HttpClient(handler);
+                client.Timeout = TimeSpan.FromMilliseconds(TimeoutMs);
+
+                HttpResponseMessage response = await client.PutAsync(SetPresetUri(presetIndex), content);
+                Console.WriteLine($"Status Code: {response.StatusCode}");
+                Console.WriteLine($"Response: {await response.Content.ReadAsStringAsync()}");
+
+                var xml = await response.Content.ReadAsStringAsync();
+
+                if (response.StatusCode is HttpStatusCode.Forbidden)
+                {
+                    XmlDocument xmlDoc = new XmlDocument();
+                    xmlDoc.LoadXml(xml);
+
+                    var xmlInnerText = xmlDoc.InnerText;
+                    throw new Exception(xmlInnerText);
+                }
+                return response;
+            }
+            catch (HttpRequestException ex)
+            {
+                Console.WriteLine($"Request error: {ex.Message}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error: {ex.Message}");
+            }
+            return new HttpResponseMessage();
+        }
+
+        private string SetPresetUri(int presetIndex)
+        {
+            return $"http://{CameraIP}/ISAPI/PTZCtrl/channels/{CameraChannel}/presets/{presetIndex}";
+        }
+
+        private string CallPresetUri(int presetIndex, int speed = 90)
+        {
+            return $"http://{CameraIP}/ISAPI/PTZCtrl/channels/{CameraChannel}/presets/{presetIndex}/goto";
+            // return $"http://{CameraIP}/ISAPI/PTZCtrl/channels/{CameraChannel}/presets/{presetIndex}/goto?speed={speed}";
+        }
+
+        /// <summary>
+        /// PUT /ISAPI/PTZCtrl/channels/1 - Изменение скорости предустановки
+        /// </summary>
+        /// <param name="presetSpeed">Скорость предустановки (обычно 1-8)</param>
+        /// <returns></returns>
+        /// <exception cref="NullReferenceException"></exception>
+        public async Task<HttpResponseMessage> SetPresetSpeed(int presetSpeed)
+        {
+            if (string.IsNullOrEmpty(CameraIP)) throw new NullReferenceException(nameof(CameraIP));
+            if (string.IsNullOrEmpty(UserName)) throw new NullReferenceException(nameof(UserName));
+
+            try
+            {
+                using var handler = new HttpClientHandler();
+                var uri = new Uri(SetPresetSpeedUri());
+                handler.Credentials = GetCredentialCache(uri);
+                using var client = new HttpClient(handler);
+                client.Timeout = TimeSpan.FromMilliseconds(TimeoutMs);
+
+                // Сначала получаем текущие настройки канала
+                var getResponse = await client.GetAsync(uri);
+
+                if (!getResponse.IsSuccessStatusCode)
+                {
+                    Console.WriteLine($"Failed to get current PTZ settings: {getResponse.StatusCode}");
+                    return getResponse;
+                }
+
+                var currentXml = await getResponse.Content.ReadAsStringAsync();
+                Console.WriteLine($"Current settings XML: {currentXml}");
+
+                // Парсим текущие настройки и обновляем только presetSpeed
+                var xmlDoc = XDocument.Parse(currentXml);
+                var ns = XNamespace.Get("http://www.hikvision.com/ver20/XMLSchema");
+
+                // Находим и обновляем presetSpeed
+                var presetSpeedElement = xmlDoc.Descendants(ns + "presetSpeed").FirstOrDefault();
+                if (presetSpeedElement != null)
+                {
+                    presetSpeedElement.Value = presetSpeed.ToString();
+                }
+                else
+                {
+                    // Если элемента нет, добавляем его
+                    var ptzChannel = xmlDoc.Descendants(ns + "PTZChannel").First();
+                    ptzChannel.Add(new XElement(ns + "presetSpeed", presetSpeed));
+                }
+
+                var updatedXml = xmlDoc.ToString();
+                Console.WriteLine($"Updated XML: {updatedXml}");
+
+                var requestContent = new StringContent(updatedXml, Encoding.UTF8, "text/xml");
+
+                // Отправляем PUT запрос для изменения скорости
+                HttpResponseMessage response = await client.PutAsync(uri, requestContent);
+
+                Console.WriteLine($"Status Code: {response.StatusCode}");
+                Console.WriteLine($"Response: {await response.Content.ReadAsStringAsync()}");
+
+                return response;
+            }
+            catch (HttpRequestException ex)
+            {
+                Console.WriteLine($"Request error: {ex.Message}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error: {ex.Message}");
+            }
+
+            return new HttpResponseMessage(HttpStatusCode.InternalServerError);
+        }
+
+        /// <summary>
+        /// Формирует URI для изменения настроек PTZ канала
+        /// </summary>
+        /// <returns></returns>
+        private string SetPresetSpeedUri()
+        {
+            return $"http://{CameraIP}/ISAPI/PTZCtrl/channels/1";
+        }
+
+
+//        /// <summary>
+//        /// PUT /ISAPI/PTZCtrl/channels/1 - Изменение скорости предустановки (минимальный XML)
+//        /// </summary>
+//        /// <param name="presetSpeed">Скорость предустановки (обычно 1-8)</param>
+//        /// <returns></returns>
+//        /// <exception cref="NullReferenceException"></exception>
+//        public async Task<HttpResponseMessage> SetPresetSpeed(int presetSpeed)
+//        {
+//            if (string.IsNullOrEmpty(CameraIP)) throw new NullReferenceException(nameof(CameraIP));
+//            if (string.IsNullOrEmpty(UserName)) throw new NullReferenceException(nameof(UserName));
+
+//            try
+//            {
+//                using var handler = new HttpClientHandler();
+//                handler.Credentials = GetCredentialCache(new Uri(SetPresetSpeedUri()));
+//                using var client = new HttpClient(handler);
+//                client.Timeout = TimeSpan.FromMilliseconds(TimeoutMs);
+
+//                // Минимальный XML - только необходимые поля
+//                var xmlContent = @$"<?xml version=""1.0"" encoding=""UTF-8""?>
+//<PTZChannel version=""2.0"" xmlns=""http://www.isapi.org/ver20/XMLSchema"">
+//    <id>1</id>
+//    <presetSpeed>{presetSpeed}</presetSpeed>
+//</PTZChannel>";
+
+//                var requestContent = new StringContent(xmlContent, Encoding.UTF8, "text/xml");
+
+//                // Отправляем PUT запрос для изменения скорости
+//                var requestUri = new Uri(SetPresetSpeedUri());
+//                HttpResponseMessage response = await client.PutAsync(requestUri, requestContent);
+
+//                Console.WriteLine($"Status Code: {response.StatusCode}");
+//                Console.WriteLine($"Response: {await response.Content.ReadAsStringAsync()}");
+
+//                return response;
+//            }
+//            catch (HttpRequestException ex)
+//            {
+//                Console.WriteLine($"Request error: {ex.Message}");
+//            }
+//            catch (Exception ex)
+//            {
+//                Console.WriteLine($"Error: {ex.Message}");
+//            }
+
+//            return new HttpResponseMessage(HttpStatusCode.InternalServerError);
+//        }
+
+//        /// <summary>
+//        /// Формирует URI для изменения настроек PTZ канала
+//        /// </summary>
+//        /// <returns></returns>
+//        private string SetPresetSpeedUri()
+//        {
+//            return $"http://{CameraIP}/ISAPI/PTZCtrl/channels/1";
+//        }
+
+        /// <summary>
+        /// PUT /ISAPI/PTZCtrl/channels/1/presets/1/goto
+        /// </summary>
+        /// <param name="presetIndex"></param>
+        /// <returns></returns>
+        /// <exception cref="NullReferenceException"></exception>
+        public async Task<HttpResponseMessage> CallPreset(int presetIndex)
+        {
+            if (string.IsNullOrEmpty(CameraIP)) throw new NullReferenceException(CameraIP);
+            if (string.IsNullOrEmpty(UserName)) throw new NullReferenceException(UserName);
+
+            try
+            {
+                using var handler = new HttpClientHandler();
+                handler.Credentials = GetCredentialCache(new Uri(CallPresetUri(presetIndex)));
+                using var client = new HttpClient(handler);
+                client.Timeout = TimeSpan.FromMilliseconds(TimeoutMs);
+
+                //HttpResponseMessage response = await client.PutAsync(new Uri(CallPresetUri(presetIndex)));
+
+                // Создаем PUT запрос с пустым содержимым, как требует Hikvision API
+                var requestUri = new Uri(CallPresetUri(presetIndex));
+                var xmlContent = @$"<?xml version=""1.0"" encoding=""UTF-8""?><PTZData><presetSpeed>9</presetSpeed></PTZData>";
+                var requestContent = new StringContent(xmlContent, Encoding.UTF8, "application/xml");
+
+                HttpResponseMessage response = await client.PutAsync(requestUri, requestContent);
+                Console.WriteLine($"Status Code: {response.StatusCode}");
+                Console.WriteLine($"Response: {await response.Content.ReadAsStringAsync()}");
+                return response;
+            }
+            catch (HttpRequestException ex)
+            {
+                Console.WriteLine($"Request error: {ex.Message}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error: {ex.Message}");
+            }
+            return new HttpResponseMessage();
+        }
+
+        private StringContent GetPresetsXmlContentString(int presetIndex)
+        {
+            //< requestURL >/ ISAPI / PTZCtrl / channels / 1 / presets / 1 /goto</ requestURL >
+
+            //PUT /ISAPI/PTZCtrl/channels/1/presets/1
+            //< enabled > true </ enabled >
+            //< id > 1 </ id >
+            //< presetName > NetSpeedDome_preset 1 </ presetName >
+            //</ PTZPreset >
+
+            var xmlContent = @$"<?xml version=""1.0"" encoding=""UTF-8""?><PTZPreset><enabled>true</enabled><id>{presetIndex}</id><presetName>preset_{presetIndex}</presetName></PTZPreset>";
+            var content = new StringContent(xmlContent, Encoding.UTF8, "application/xml");
+            return content;
+        }
+
+        /// <summary>
         /// SetPosition(X, Y, ZOOM)
         /// </summary>
         /// <param name="xPan"></param>
@@ -193,6 +449,9 @@ namespace ModulePelcoD.Hikvision
         /// <returns></returns>
         public async Task<HttpResponseMessage> SetPosition(float xPan, float yTilt, float zZoom = 0)
         {
+            // http://172.168.10.55/ISAPI/PTZCtrl/channels/1/continuous
+            //"1.0" encoding="UTF-8"?><PTZData><pan>60</pan><tilt>0</tilt></PTZData>
+
             if (string.IsNullOrEmpty(CameraIP)) throw new NullReferenceException(CameraIP);
             if (string.IsNullOrEmpty(UserName)) throw new NullReferenceException(UserName);
 
@@ -203,7 +462,7 @@ namespace ModulePelcoD.Hikvision
                 using var handler = new HttpClientHandler();
                 handler.Credentials = GetCredentialCache(new Uri(GetPositionUri()));
                 using var client = new HttpClient(handler);
-                client.Timeout = TimeSpan.FromMilliseconds(500);
+                client.Timeout = TimeSpan.FromMilliseconds(TimeoutMs);
 
                 HttpResponseMessage response = await client.PutAsync(GetPositionUri(), content);
                 Console.WriteLine($"Status Code: {response.StatusCode}");
