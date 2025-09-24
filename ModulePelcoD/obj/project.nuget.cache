@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "dgSpecHash": "4hyU35HlZ+g=",
+  "dgSpecHash": "ZNQ64n4fxQs=",
   "success": true,
-  "projectFilePath": "C:\\Users\\VirSign\\source\\repos\\ModulePelcoD\\ModulePelcoD\\ModulePelcoD.csproj",
+  "projectFilePath": "C:\\Users\\VirSign\\Source\\Repos\\JoystickPelcoReader\\ModulePelcoD\\ModulePelcoD.csproj",
   "expectedPackageFiles": [
     "C:\\Users\\VirSign\\.nuget\\packages\\microsoft.extensions.configuration\\9.0.2\\microsoft.extensions.configuration.9.0.2.nupkg.sha512",
     "C:\\Users\\VirSign\\.nuget\\packages\\microsoft.extensions.configuration.abstractions\\9.0.2\\microsoft.extensions.configuration.abstractions.9.0.2.nupkg.sha512",
