@@ -58,24 +58,37 @@ namespace ModulePelcoD.Hikvision
         /// <param name="response">HTTP-ответ от камеры.</param>
         public async Task ResponseStatus(HttpResponseMessage response)
         {
-            if (!response.IsSuccessStatusCode)
+            if (response.IsSuccessStatusCode) return;
+
+            try
             {
                 Uri? requestedUri = response.RequestMessage?.RequestUri;
+                var xml = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
 
-                var xml = await response.Content.ReadAsStringAsync();
-
-                if (response.StatusCode is HttpStatusCode.Forbidden)
+                if (response.StatusCode == HttpStatusCode.Forbidden)
                 {
-                    XmlDocument xmlDoc = new XmlDocument();
-                    xmlDoc.LoadXml(xml);
+                    try
+                    {
+                        var xmlDoc = new XmlDocument();
+                        xmlDoc.LoadXml(xml);
+                        var xmlInnerText = xmlDoc.InnerText;
+                        throw new InvalidOperationException(
+                            $"Запрос не авторизован (403). Uri=[{requestedUri}] Ответ XML: {xmlInnerText}");
+                    }
+                    catch (XmlException)
+                    {
+                        // Если это не корректный XML — всё равно бросаем с оригинальным телом
+                        throw new InvalidOperationException(
+                            $"Запрос не авторизован (403). Uri=[{requestedUri}] Тело ответа: {xml}");
+                    }
+                }
 
-                    var xmlInnerText = xmlDoc.InnerText;
-                    Console.WriteLine($"Failed Uri:[{requestedUri}] -> HttpResponseMessage\nStatusCode:[{response.StatusCode}]\nXML response:{xmlInnerText}");
-                }
-                else
-                {
-                    Console.WriteLine($"Failed Uri:[{requestedUri}] -> HttpResponseMessage StatusCode:[{response.StatusCode}]");
-                }
+                throw new InvalidOperationException(
+                    $"HTTP ошибка {(int)response.StatusCode} ({response.StatusCode}). Uri=[{requestedUri}] Тело ответа: {xml}");
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException($"Ошибка обработки HTTP-ответа камеры {PtzHttpClient.BaseAddress}", ex);
             }
         }
 
@@ -86,19 +99,22 @@ namespace ModulePelcoD.Hikvision
         /// <returns>HTTP-ответ от камеры.</returns>
         public async Task<HttpResponseMessage> SetPresetSpeed(int presetSpeed)
         {
-            if (string.IsNullOrEmpty(Channel)) throw new NullReferenceException(nameof(Channel));
+            if (string.IsNullOrWhiteSpace(Channel))
+                throw new InvalidOperationException("Channel не установлен.");
+
+            if (presetSpeed < 0) presetSpeed = 1;
+            if (presetSpeed > 8) presetSpeed = 8;
 
             try
             {
-                var uri = string.Format("/ISAPI/PTZCtrl/channels/{0}", Channel);
-                HttpResponseMessage getResponse = await PtzHttpClient.GetAsync(uri);
-                await ResponseStatus(getResponse);
+                var uri = $"/ISAPI/PTZCtrl/channels/{Channel}";
+                var getResponse = await PtzHttpClient.GetAsync(uri).ConfigureAwait(false);
+                await ResponseStatus(getResponse).ConfigureAwait(false);
 
-                var currentXml = await getResponse.Content.ReadAsStringAsync();
+                var currentXml = await getResponse.Content.ReadAsStringAsync().ConfigureAwait(false);
                 var xmlDoc = XDocument.Parse(currentXml);
                 var ns = XNamespace.Get("http://www.hikvision.com/ver20/XMLSchema");
 
-                // Находим и обновляем presetSpeed
                 var presetSpeedElement = xmlDoc.Descendants(ns + "presetSpeed").FirstOrDefault();
                 if (presetSpeedElement != null)
                 {
@@ -112,22 +128,23 @@ namespace ModulePelcoD.Hikvision
 
                 var requestContent = new StringContent(xmlDoc.ToString(), Encoding.UTF8, "text/xml");
 
-                // Отправляем PUT запрос для изменения скорости
-                HttpResponseMessage putResponse = await PtzHttpClient.PutAsync(uri, requestContent);
-                await ResponseStatus(putResponse);
+                var putResponse = await PtzHttpClient.PutAsync(uri, requestContent).ConfigureAwait(false);
+                await ResponseStatus(putResponse).ConfigureAwait(false);
 
                 return putResponse;
             }
             catch (HttpRequestException ex)
             {
-                Console.WriteLine($"Request error: {ex.Message}");
+                throw new InvalidOperationException($"Ошибка HTTP при установке presetSpeed={presetSpeed} для {PtzHttpClient.BaseAddress}.", ex);
+            }
+            catch (XmlException ex)
+            {
+                throw new InvalidOperationException("Ошибка разбора XML-конфигурации PTZ канала.", ex);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error: {ex.Message}");
+                throw new InvalidOperationException($"Не удалось установить presetSpeed={presetSpeed} для {PtzHttpClient.BaseAddress}.", ex);
             }
-
-            return new HttpResponseMessage(HttpStatusCode.InternalServerError);
         }
 
         /// <summary>
@@ -139,24 +156,25 @@ namespace ModulePelcoD.Hikvision
         /// <returns>HTTP-ответ от камеры.</returns>
         public async Task<HttpResponseMessage> SetPosition(float xPan, float yTilt, float zZoom = 0)
         {
-            if (string.IsNullOrEmpty(Channel)) throw new NullReferenceException(Channel);
+            if (string.IsNullOrWhiteSpace(Channel))
+                throw new InvalidOperationException("Channel не установлен.");
+
             try
             {
                 var content = StringContentBuilder($@"<PTZData><pan>{xPan}</pan><tilt>{yTilt}</tilt><zoom>{zZoom}</zoom></PTZData>");
-                var uri = string.Format("/ISAPI/PTZCtrl/channels/{0}/continuous", Channel);
-                HttpResponseMessage putResponse = await PtzHttpClient.PutAsync(uri, content);
-                await ResponseStatus(putResponse);
+                var uri = $"/ISAPI/PTZCtrl/channels/{Channel}/continuous";
+                var putResponse = await PtzHttpClient.PutAsync(uri, content).ConfigureAwait(false);
+                await ResponseStatus(putResponse).ConfigureAwait(false);
                 return putResponse;
             }
             catch (HttpRequestException ex)
             {
-                Console.WriteLine($"Request error: {ex.Message}");
+                throw new InvalidOperationException($"Ошибка HTTP при установке позиции PTZ для {PtzHttpClient.BaseAddress}.", ex);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error: {ex.Message}");
+                throw new InvalidOperationException($"Не удалось установить позицию PTZ для {PtzHttpClient.BaseAddress}.", ex);
             }
-            return new HttpResponseMessage();
         }
 
         /// <summary>
@@ -166,24 +184,25 @@ namespace ModulePelcoD.Hikvision
         /// <returns>HTTP-ответ от камеры.</returns>
         public async Task<HttpResponseMessage> SetPreset(int presetIndex)
         {
-            if (string.IsNullOrEmpty(Channel)) throw new NullReferenceException(Channel);
+            if (string.IsNullOrWhiteSpace(Channel))
+                throw new InvalidOperationException("Channel не установлен.");
+
             try
             {
                 var content = StringContentBuilder($@"<PTZPreset><enabled>true</enabled><id>{presetIndex}</id><presetName>preset_{presetIndex}</presetName></PTZPreset>");
                 var uri = $"/ISAPI/PTZCtrl/channels/{Channel}/presets/{presetIndex}";
-                HttpResponseMessage putResponse = await PtzHttpClient.PutAsync(uri, content);
-                await ResponseStatus(putResponse);
+                var putResponse = await PtzHttpClient.PutAsync(uri, content).ConfigureAwait(false);
+                await ResponseStatus(putResponse).ConfigureAwait(false);
                 return putResponse;
             }
             catch (HttpRequestException ex)
             {
-                Console.WriteLine($"Request error: {ex.Message}");
+                throw new InvalidOperationException($"Ошибка HTTP при создании/обновлении пресета {presetIndex} для {PtzHttpClient.BaseAddress}.", ex);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error: {ex.Message}");
+                throw new InvalidOperationException($"Не удалось создать/обновить пресет {presetIndex} для {PtzHttpClient.BaseAddress}.", ex);
             }
-            return new HttpResponseMessage();
         }
 
         /// <summary>
@@ -193,24 +212,25 @@ namespace ModulePelcoD.Hikvision
         /// <returns>HTTP-ответ от камеры.</returns>
         public async Task<HttpResponseMessage> CallPreset(int presetIndex)
         {
-            if (string.IsNullOrEmpty(Channel)) throw new NullReferenceException(Channel);
+            if (string.IsNullOrWhiteSpace(Channel))
+                throw new InvalidOperationException("Channel не установлен.");
+
             try
             {
-                var uri = string.Format("/ISAPI/PTZCtrl/channels/{0}/presets/{1}/goto", Channel, presetIndex);
-                var content = StringContentBuilder(string.Empty);
-                HttpResponseMessage putResponse = await PtzHttpClient.PutAsync(uri, content);
-                await ResponseStatus(putResponse);
+                var uri = $"/ISAPI/PTZCtrl/channels/{Channel}/presets/{presetIndex}/goto";
+                var content = StringContentBuilder("<PTZData></PTZData>");
+                var putResponse = await PtzHttpClient.PutAsync(uri, content).ConfigureAwait(false);
+                await ResponseStatus(putResponse).ConfigureAwait(false);
                 return putResponse;
             }
             catch (HttpRequestException ex)
             {
-                Console.WriteLine($"Request error: {ex.Message}");
+                throw new InvalidOperationException($"Ошибка HTTP при переходе к пресету {presetIndex} для {PtzHttpClient.BaseAddress}.", ex);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error: {ex.Message}");
+                throw new InvalidOperationException($"Не удалось перейти к пресету {presetIndex} для {PtzHttpClient.BaseAddress}.", ex);
             }
-            return new HttpResponseMessage();
         }
 
         /// <summary>
@@ -219,23 +239,24 @@ namespace ModulePelcoD.Hikvision
         /// <returns>HTTP-ответ от камеры.</returns>
         public async Task<HttpResponseMessage> GetCameraInfo()
         {
-            if (string.IsNullOrEmpty(Channel)) throw new NullReferenceException(Channel);
+            if (string.IsNullOrWhiteSpace(Channel))
+                throw new InvalidOperationException("Channel не установлен.");
+
             try
             {
-                var uri = string.Format("/ISAPI/System/deviceInfo");
-                HttpResponseMessage getResponse = await PtzHttpClient.GetAsync(uri);
-                await ResponseStatus(getResponse);
+                var uri = "/ISAPI/System/deviceInfo";
+                var getResponse = await PtzHttpClient.GetAsync(uri).ConfigureAwait(false);
+                await ResponseStatus(getResponse).ConfigureAwait(false);
                 return getResponse;
             }
             catch (HttpRequestException ex)
             {
-                Console.WriteLine($"Request error: {ex.Message}");
+                throw new InvalidOperationException($"Ошибка HTTP при получении информации об {PtzHttpClient.BaseAddress}.", ex);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error: {ex.Message}");
+                throw new InvalidOperationException($"Не удалось получить информацию об {PtzHttpClient.BaseAddress}.", ex);
             }
-            return new HttpResponseMessage();
         }
 
         /// <summary>
@@ -244,24 +265,24 @@ namespace ModulePelcoD.Hikvision
         /// <returns>HTTP-ответ от камеры.</returns>
         public async Task<HttpResponseMessage> GetCameraPTZCtrl()
         {
-            if (PtzHttpClient == null) throw new NullReferenceException(nameof(PtzHttpClient));
+            if (PtzHttpClient == null)
+                throw new InvalidOperationException("PtzHttpClient не инициализирован.");
 
             try
             {
-                var uri = string.Format("/ISAPI/PTZCtrl/channels");
-                HttpResponseMessage getResponse = await PtzHttpClient.GetAsync(uri);
-                await ResponseStatus(getResponse);
+                var uri = "/ISAPI/PTZCtrl/channels";
+                var getResponse = await PtzHttpClient.GetAsync(uri).ConfigureAwait(false);
+                await ResponseStatus(getResponse).ConfigureAwait(false);
                 return getResponse;
             }
             catch (HttpRequestException ex)
             {
-                Console.WriteLine($"Request error: {ex.Message}");
+                throw new InvalidOperationException($"Ошибка HTTP при получении конфигурации PTZ-контроллера для {PtzHttpClient.BaseAddress}.", ex);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error: {ex.Message}");
+                throw new InvalidOperationException($"Не удалось получить конфигурацию PTZ-контроллера для {PtzHttpClient.BaseAddress}.", ex);
             }
-            return new HttpResponseMessage();
         }
     }
 }

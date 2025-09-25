@@ -14,7 +14,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("ModulePelcoD")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+73e9d56d5003e8575cd2df9bf9077401823782aa")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+0a5db4fa7028c64bec00f8a09f40de7e910bbe32")]
 [assembly: System.Reflection.AssemblyProductAttribute("ModulePelcoD")]
 [assembly: System.Reflection.AssemblyTitleAttribute("ModulePelcoD")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

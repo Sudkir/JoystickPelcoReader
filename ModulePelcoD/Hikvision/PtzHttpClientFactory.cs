@@ -16,7 +16,7 @@ namespace ModulePelcoD.Hikvision
         private static readonly ConcurrentDictionary<string, HttpClient> _clients = new();
 
         /// <summary>
-        /// Получает или создаёт новый <see cref="HttpClient"/>, 
+        /// Получает или создаёт новый <see cref="HttpClient"/>,
         /// предварительно настроенный для авторизации Digest и работы с камерой.
         /// </summary>
         /// <param name="ip">IP-адрес камеры.</param>
@@ -30,30 +30,44 @@ namespace ModulePelcoD.Hikvision
             string password,
             int timeoutMs = 1_000)
         {
-            var baseUri = new Uri($"http://{ip}/");
-            var authority = baseUri.GetLeftPart(UriPartial.Authority);
-
-            return _clients.GetOrAdd(authority, _ =>
+            try
             {
-                var handler = new SocketsHttpHandler
-                {
-                    // Обновление DNS, чтобы не залипать на старом IP
-                    PooledConnectionLifetime = TimeSpan.FromMinutes(2),
-                    // Digest: сначала challenge → затем ответ; PreAuthenticate оставляем false
-                    Credentials = BuildDigestCredentials(authority, user, password),
-                    AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
-                };
+                var baseUri = new Uri($"http://{ip}/");
+                var authority = baseUri.GetLeftPart(UriPartial.Authority);
 
-                var client = new HttpClient(handler, disposeHandler: true)
+                return _clients.GetOrAdd(authority, _ =>
                 {
-                    BaseAddress = baseUri,
-                    Timeout = TimeSpan.FromMilliseconds(timeoutMs)
-                };
+                    try
+                    {
+                        var handler = new SocketsHttpHandler
+                        {
+                            // Обновление DNS, чтобы не залипать на старом IP
+                            PooledConnectionLifetime = TimeSpan.FromMinutes(2),
+                            // Digest: сначала challenge → затем ответ; PreAuthenticate оставляем false
+                            Credentials = BuildDigestCredentials(authority, user, password),
+                            AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
+                        };
 
-                client.DefaultRequestHeaders.ExpectContinue = false;
-                client.DefaultRequestHeaders.Add("Accept", "application/json, */*");
-                return client;
-            });
+                        var client = new HttpClient(handler, disposeHandler: true)
+                        {
+                            BaseAddress = baseUri,
+                            Timeout = TimeSpan.FromMilliseconds(timeoutMs)
+                        };
+
+                        client.DefaultRequestHeaders.ExpectContinue = false;
+                        client.DefaultRequestHeaders.Add("Accept", "application/json, */*");
+                        return client;
+                    }
+                    catch (Exception ex)
+                    {
+                        throw new InvalidOperationException($"Ошибка при создании PTZ HttpClient для {authority} IP:[{ip}].", ex);
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException($"Ошибка фабрики при получении PTZ HttpClient для IP:[{ip}].", ex);
+            }
         }
 
         /// <summary>
@@ -67,11 +81,18 @@ namespace ModulePelcoD.Hikvision
         /// </returns>
         private static CredentialCache BuildDigestCredentials(string authority, string user, string password)
         {
-            var cache = new CredentialCache
+            try
             {
-                { new Uri(authority), "Digest", new NetworkCredential(user, password) }
-            };
-            return cache;
+                var cache = new CredentialCache
+                {
+                    { new Uri(authority), "Digest", new NetworkCredential(user, password) }
+                };
+                return cache;
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException($"Ошибка при формировании Digest-креденшелов для {authority}.", ex);
+            }
         }
     }
 }
