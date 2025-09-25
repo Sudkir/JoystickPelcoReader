@@ -366,9 +366,4 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
-/LaserScannerRF62X/points
-
-.DS_Store
-**/appsettings.json
-**/appsettings.*.json
 **/*.original
